@@ -145,7 +145,7 @@ class IPAdapter(nn.Module):
 
         clip_embed = torch.split(clip_embed, batch_size, dim=0)
         clip_embed_zeroed = torch.split(clip_embed_zeroed, batch_size, dim=0)
-        
+
         image_prompt_embeds = []
         uncond_image_prompt_embeds = []
 
@@ -281,7 +281,7 @@ def ipadapter_execute(model,
         cross_attention_dim = 1280
     else:
         cross_attention_dim = output_cross_attention_dim
-    
+
     if is_kwai_kolors_faceid:
         clip_extra_context_tokens = 6
     elif (is_plus and not is_faceid) or is_portrait or is_portrait_unnorm:
@@ -337,7 +337,7 @@ def ipadapter_execute(model,
         else:
             weight = { 0:weight, 1:weight, 2:weight, 3:weight, 4:weight_composition*0.25, 5:weight_composition, 6:weight*.1, 7:weight*.1, 8:weight*.1, 9:weight, 10:weight, 11:weight, 12:weight, 13:weight, 14:weight, 15:weight }
 
-    clipvision_size = 224 if not is_kwai_kolors else 336
+    clipvision_size = clipvision.image_size
 
     img_comp_cond_embeds = None
     face_cond_embeds = None
@@ -1943,6 +1943,101 @@ class IPAdapterCombineParams:
 
         return (ipadapter_params, )
 
+# Adapted from https://github.com/vahlok-alunmid/ComfyUI-ExtendIPAdapterClipVision by vahlok-alunmid under GPL-3.0 license
+class ExtendClipVisionInputSize:
+    @classmethod
+    def INPUT_TYPES(s):
+        return {"required": { "clip_vision": ("CLIP_VISION",),
+                              "target_size": ("INT", {"default": 448, "min": 224, "max": 1344, "step": 112}),
+                             }}
+    RETURN_TYPES = ("CLIP_VISION",)
+    FUNCTION = "apply_patch"
+
+    CATEGORY = "model_patches"
+
+    @staticmethod
+    def interpolate_embeddings(
+        image_size: int,
+        patch_size: int,
+        pos_embedding: torch.Tensor,
+        interpolation_mode: str = "bicubic",
+        reset_heads: bool = False,
+    ) -> torch.Tensor:
+        """(From torchvision) This function helps interpolate positional embeddings during checkpoint loading,
+        especially when you want to apply a pre-trained model on images with different resolution.
+
+        Args:
+            image_size (int): Image size of the new model.
+            patch_size (int): Patch size of the new model.
+            pos_embedding (torch.Tensor): Positional embedding tensor.
+            interpolation_mode (str): The algorithm used for upsampling. Default: bicubic.
+            reset_heads (bool): If true, not copying the state of heads. Default: False.
+
+        Returns:
+            OrderedDict[str, torch.Tensor]: A state dict which can be loaded into the new model.
+        """
+        # Shape of pos_embedding is (1, seq_length, hidden_dim)
+        n, seq_length, hidden_dim = pos_embedding.shape
+        if n != 1:
+            raise ValueError(f"Unexpected position embedding shape: {pos_embedding.shape}")
+
+        new_seq_length = (image_size // patch_size) ** 2 + 1
+
+        # Need to interpolate the weights for the position embedding.
+        # We do this by reshaping the positions embeddings to a 2d grid, performing
+        # an interpolation in the (h, w) space and then reshaping back to a 1d grid.
+        if new_seq_length != seq_length:
+            # The class token embedding shouldn't be interpolated, so we split it up.
+            seq_length -= 1
+            new_seq_length -= 1
+            pos_embedding_token = pos_embedding[:, :1, :]
+            pos_embedding_img = pos_embedding[:, 1:, :]
+
+            # (1, seq_length, hidden_dim) -> (1, hidden_dim, seq_length)
+            pos_embedding_img = pos_embedding_img.permute(0, 2, 1)
+            seq_length_1d = int(math.sqrt(seq_length))
+            if seq_length_1d * seq_length_1d != seq_length:
+                raise ValueError(
+                    f"seq_length is not a perfect square! Instead got seq_length_1d * seq_length_1d = {seq_length_1d * seq_length_1d } and seq_length = {seq_length}"
+                )
+
+            # (1, hidden_dim, seq_length) -> (1, hidden_dim, seq_l_1d, seq_l_1d)
+            pos_embedding_img = pos_embedding_img.reshape(1, hidden_dim, seq_length_1d, seq_length_1d)
+            new_seq_length_1d = image_size // patch_size
+
+            # Perform interpolation.
+            # (1, hidden_dim, seq_l_1d, seq_l_1d) -> (1, hidden_dim, new_seq_l_1d, new_seq_l_1d)
+            new_pos_embedding_img = torch.nn.functional.interpolate(
+                pos_embedding_img,
+                size=new_seq_length_1d,
+                mode=interpolation_mode,
+                align_corners=True,
+            )
+
+            # (1, hidden_dim, new_seq_l_1d, new_seq_l_1d) -> (1, hidden_dim, new_seq_length)
+            new_pos_embedding_img = new_pos_embedding_img.reshape(1, hidden_dim, new_seq_length)
+
+            # (1, hidden_dim, new_seq_length) -> (1, new_seq_length, hidden_dim)
+            new_pos_embedding_img = new_pos_embedding_img.permute(0, 2, 1)
+            new_pos_embedding = torch.cat([pos_embedding_token, new_pos_embedding_img], dim=1)
+        else:
+            new_pos_embedding = pos_embedding
+
+        return new_pos_embedding
+
+    def apply_patch(self, clip_vision, target_size):
+        pe = clip_vision.model.vision_model.embeddings.position_embedding
+        patch_count = clip_vision.model.vision_model.embeddings.patch_embedding.kernel_size[0]
+        original_dtype = clip_vision.model.vision_model.embeddings.patch_embedding.weight.dtype
+        original_device = clip_vision.model.vision_model.embeddings.patch_embedding.weight.get_device()
+        pe = torch.unsqueeze(pe.weight, 0).to(torch.float32)
+        pe = torch.squeeze(self.interpolate_embeddings(target_size, patch_count, pe))
+        pe = torch.nn.Embedding(pe.shape[0], pe.shape[1],
+                                _weight=pe, dtype=original_dtype, device=original_device)
+        clip_vision.patcher.add_object_patch("vision_model.embeddings.position_embedding", pe)
+        clip_vision.image_size = target_size
+        return (clip_vision,)
+
 """
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
  Register
@@ -1991,6 +2086,8 @@ NODE_CLASS_MAPPINGS = {
     "IPAdapterPromptScheduleFromWeightsStrategy": IPAdapterPromptScheduleFromWeightsStrategy,
     "IPAdapterRegionalConditioning": IPAdapterRegionalConditioning,
     "IPAdapterCombineParams": IPAdapterCombineParams,
+
+    "ExtendClipVisionInputSize": ExtendClipVisionInputSize,
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
