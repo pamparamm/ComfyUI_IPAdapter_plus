@@ -32,7 +32,7 @@ class Attn2Replace:
                 out = out + callback(out, q, k, v, extra_options, **device_kwargs[i])
 
         return out.to(dtype=dtype)
-    
+
     def to(self, device, *args, **kwargs):
         if not isinstance(device, torch.device):
             return self
@@ -47,11 +47,11 @@ class Attn2Replace:
             return self
         if self.kwargs[0]["cond"].device == device:
             return self
-        
+
         new_kwargs = []
         for kwargs_dict in self.kwargs:
             new_kwargs.append(kwargs_dict.copy())
-        
+
         for kwargs_dict in new_kwargs:
             for key, value in kwargs_dict.items():
                 if key == "ipadapter":
