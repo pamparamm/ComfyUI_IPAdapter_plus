@@ -1,4 +1,5 @@
 import math
+
 import torch
 import torch.nn as nn
 from einops import rearrange
@@ -199,12 +200,13 @@ class MLPProjModel(nn.Module):
             nn.Linear(clip_embeddings_dim, clip_embeddings_dim),
             nn.GELU(),
             nn.Linear(clip_embeddings_dim, cross_attention_dim),
-            nn.LayerNorm(cross_attention_dim)
+            nn.LayerNorm(cross_attention_dim),
         )
 
     def forward(self, image_embeds):
         clip_extra_context_tokens = self.proj(image_embeds)
         return clip_extra_context_tokens
+
 
 class MLPProjModelFaceId(nn.Module):
     def __init__(self, cross_attention_dim=768, id_embeddings_dim=512, num_tokens=4):
@@ -214,9 +216,9 @@ class MLPProjModelFaceId(nn.Module):
         self.num_tokens = num_tokens
 
         self.proj = nn.Sequential(
-            nn.Linear(id_embeddings_dim, id_embeddings_dim*2),
+            nn.Linear(id_embeddings_dim, id_embeddings_dim * 2),
             nn.GELU(),
-            nn.Linear(id_embeddings_dim*2, cross_attention_dim*num_tokens),
+            nn.Linear(id_embeddings_dim * 2, cross_attention_dim * num_tokens),
         )
         self.norm = nn.LayerNorm(cross_attention_dim)
 
@@ -226,6 +228,7 @@ class MLPProjModelFaceId(nn.Module):
         x = self.norm(x)
         return x
 
+
 class ProjModelFaceIdPlus(nn.Module):
     def __init__(self, cross_attention_dim=768, id_embeddings_dim=512, clip_embeddings_dim=1280, num_tokens=4):
         super().__init__()
@@ -234,9 +237,9 @@ class ProjModelFaceIdPlus(nn.Module):
         self.num_tokens = num_tokens
 
         self.proj = nn.Sequential(
-            nn.Linear(id_embeddings_dim, id_embeddings_dim*2),
+            nn.Linear(id_embeddings_dim, id_embeddings_dim * 2),
             nn.GELU(),
-            nn.Linear(id_embeddings_dim*2, cross_attention_dim*num_tokens),
+            nn.Linear(id_embeddings_dim * 2, cross_attention_dim * num_tokens),
         )
         self.norm = nn.LayerNorm(cross_attention_dim)
 
@@ -258,6 +261,7 @@ class ProjModelFaceIdPlus(nn.Module):
         if shortcut:
             out = x + scale * out
         return out
+
 
 class ImageProjModel(nn.Module):
     def __init__(self, cross_attention_dim=1024, clip_embeddings_dim=1024, clip_extra_context_tokens=4):

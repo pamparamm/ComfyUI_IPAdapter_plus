@@ -1,8 +1,11 @@
-import torch
 import math
+
+import torch
 import torch.nn.functional as F
 from comfy.ldm.modules.attention import attention_sage, optimized_attention
+
 from .utils import tensor_to_size
+
 
 class Attn2Replace:
     def __init__(self, callback=None, **kwargs):
@@ -23,7 +26,7 @@ class Attn2Replace:
     def __call__(self, q, k, v, extra_options):
         dtype = q.dtype
         out = optimized_attention(q, k, v, extra_options["n_heads"])
-        sigma = extra_options["sigmas"].detach().cpu()[0].item() if 'sigmas' in extra_options else 999999999.9
+        sigma = extra_options["sigmas"].detach().cpu()[0].item() if "sigmas" in extra_options else 999999999.9
 
         device_kwargs = self.get_multigpu_kwargs(q.device)
 
@@ -62,7 +65,27 @@ class Attn2Replace:
         self.multigpu_kwargs[device] = new_kwargs
         return self
 
-def ipadapter_attention(out, q, k, v, extra_options, module_key='', ipadapter=None, weight=1.0, cond=None, cond_alt=None, uncond=None, weight_type="linear", mask=None, sigma_start=0.0, sigma_end=1.0, unfold_batch=False, embeds_scaling='V only', **kwargs):
+
+def ipadapter_attention(
+    out,
+    q,
+    k,
+    v,
+    extra_options,
+    module_key="",
+    ipadapter=None,
+    weight=1.0,
+    cond=None,
+    cond_alt=None,
+    uncond=None,
+    weight_type="linear",
+    mask=None,
+    sigma_start=0.0,
+    sigma_end=1.0,
+    unfold_batch=False,
+    embeds_scaling="V only",
+    **kwargs,
+):
     ipadapter = ipadapter.get_multigpu_clone(q.device)
 
     epsilon = 0.0
@@ -71,35 +94,35 @@ def ipadapter_attention(out, q, k, v, extra_options, module_key='', ipadapter=No
     dtype = q.dtype
     cond_or_uncond = extra_options["cond_or_uncond"]
     block_type = extra_options["block"][0]
-    #block_id = extra_options["block"][1]
+    # block_id = extra_options["block"][1]
     t_idx = extra_options["transformer_index"]
-    layers = 11 if '101_to_k_ip' in ipadapter.ip_layers.to_kvs else 16
+    layers = 11 if "101_to_k_ip" in ipadapter.ip_layers.to_kvs else 16
     k_key = module_key + "_to_k_ip"
     v_key = module_key + "_to_v_ip"
 
     # extra options for AnimateDiff
-    ad_params = extra_options['ad_params'] if "ad_params" in extra_options else None
+    ad_params = extra_options["ad_params"] if "ad_params" in extra_options else None
 
     b = q.shape[0]
     seq_len = q.shape[1]
     batch_prompt = b // len(cond_or_uncond)
     _, _, oh, ow = extra_options["original_shape"]
 
-    if weight_type == 'ease in':
+    if weight_type == "ease in":
         weight = weight * (0.05 + 0.95 * (1 - t_idx / layers))
-    elif weight_type == 'ease out':
+    elif weight_type == "ease out":
         weight = weight * (0.05 + 0.95 * (t_idx / layers))
-    elif weight_type == 'ease in-out':
-        weight = weight * (0.05 + 0.95 * (1 - abs(t_idx - (layers/2)) / (layers/2)))
-    elif weight_type == 'reverse in-out':
-        weight = weight * (0.05 + 0.95 * (abs(t_idx - (layers/2)) / (layers/2)))
-    elif weight_type == 'weak input' and block_type == 'input':
+    elif weight_type == "ease in-out":
+        weight = weight * (0.05 + 0.95 * (1 - abs(t_idx - (layers / 2)) / (layers / 2)))
+    elif weight_type == "reverse in-out":
+        weight = weight * (0.05 + 0.95 * (abs(t_idx - (layers / 2)) / (layers / 2)))
+    elif weight_type == "weak input" and block_type == "input":
         weight = weight * 0.2
-    elif weight_type == 'weak middle' and block_type == 'middle':
+    elif weight_type == "weak middle" and block_type == "middle":
         weight = weight * 0.2
-    elif weight_type == 'weak output' and block_type == 'output':
+    elif weight_type == "weak output" and block_type == "output":
         weight = weight * 0.2
-    elif weight_type == 'strong middle' and (block_type == 'input' or block_type == 'output'):
+    elif weight_type == "strong middle" and (block_type == "input" or block_type == "output"):
         weight = weight * 0.2
     elif isinstance(weight, dict):
         if t_idx not in weight:
@@ -134,7 +157,7 @@ def ipadapter_attention(out, q, k, v, extra_options, module_key='', ipadapter=No
                 weight = torch.Tensor(weight[ad_params["sub_idxs"]])
                 if torch.all(weight == 0):
                     return 0
-                weight = weight.repeat(len(cond_or_uncond), 1, 1) # repeat for cond and uncond
+                weight = weight.repeat(len(cond_or_uncond), 1, 1)  # repeat for cond and uncond
             elif weight == 0:
                 return 0
 
@@ -153,7 +176,7 @@ def ipadapter_attention(out, q, k, v, extra_options, module_key='', ipadapter=No
                 weight = tensor_to_size(weight, batch_prompt)
                 if torch.all(weight == 0):
                     return 0
-                weight = weight.repeat(len(cond_or_uncond), 1, 1) # repeat for cond and uncond
+                weight = weight.repeat(len(cond_or_uncond), 1, 1)  # repeat for cond and uncond
             elif weight == 0:
                 return 0
 
@@ -170,7 +193,7 @@ def ipadapter_attention(out, q, k, v, extra_options, module_key='', ipadapter=No
             weight = tensor_to_size(weight, batch_prompt)
             if torch.all(weight == 0):
                 return 0
-            weight = weight.repeat(len(cond_or_uncond), 1, 1) # repeat for cond and uncond
+            weight = weight.repeat(len(cond_or_uncond), 1, 1)  # repeat for cond and uncond
         elif weight == 0:
             return 0
 
@@ -179,14 +202,14 @@ def ipadapter_attention(out, q, k, v, extra_options, module_key='', ipadapter=No
         v_cond = ipadapter.ip_layers.to_kvs[v_key](cond).repeat(batch_prompt, 1, 1)
         v_uncond = ipadapter.ip_layers.to_kvs[v_key](uncond).repeat(batch_prompt, 1, 1)
 
-    if len(cond_or_uncond) == 3: # TODO: cosxl, I need to check this
+    if len(cond_or_uncond) == 3:  # TODO: cosxl, I need to check this
         ip_k = torch.cat([(k_cond, k_uncond, k_cond)[i] for i in cond_or_uncond], dim=0)
         ip_v = torch.cat([(v_cond, v_uncond, v_cond)[i] for i in cond_or_uncond], dim=0)
     else:
         ip_k = torch.cat([(k_cond, k_uncond)[i] for i in cond_or_uncond], dim=0)
         ip_v = torch.cat([(v_cond, v_uncond)[i] for i in cond_or_uncond], dim=0)
 
-    if embeds_scaling == 'K+mean(V) w/ C penalty':
+    if embeds_scaling == "K+mean(V) w/ C penalty":
         scaling = float(ip_k.shape[2]) / 1280.0
         weight = weight * scaling
         ip_k = ip_k * weight
@@ -194,20 +217,20 @@ def ipadapter_attention(out, q, k, v, extra_options, module_key='', ipadapter=No
         ip_v = (ip_v - ip_v_mean) + ip_v_mean * weight
         out_ip = optimized_attention(q, ip_k, ip_v, extra_options["n_heads"])
         del ip_v_mean
-    elif embeds_scaling == 'K+V w/ C penalty':
+    elif embeds_scaling == "K+V w/ C penalty":
         scaling = float(ip_k.shape[2]) / 1280.0
         weight = weight * scaling
         ip_k = ip_k * weight
         ip_v = ip_v * weight
         out_ip = optimized_attention(q, ip_k, ip_v, extra_options["n_heads"])
-    elif embeds_scaling == 'K+V':
+    elif embeds_scaling == "K+V":
         ip_k = ip_k * weight
         ip_v = ip_v * weight
         out_ip = optimized_attention(q, ip_k, ip_v, extra_options["n_heads"])
     else:
-        #ip_v = ip_v * weight
+        # ip_v = ip_v * weight
         out_ip = optimized_attention(q, ip_k, ip_v, extra_options["n_heads"])
-        out_ip = out_ip * weight # I'm doing this to get the same results as before
+        out_ip = out_ip * weight  # I'm doing this to get the same results as before
 
     if mask is not None:
         mask_h = oh / math.sqrt(oh * ow / seq_len)
@@ -215,7 +238,7 @@ def ipadapter_attention(out, q, k, v, extra_options, module_key='', ipadapter=No
         mask_w = seq_len // mask_h
 
         # check if using AnimateDiff and sliding context window
-        if (mask.shape[0] > 1 and ad_params is not None and ad_params["sub_idxs"] is not None):
+        if mask.shape[0] > 1 and ad_params is not None and ad_params["sub_idxs"] is not None:
             # if mask length matches or exceeds full_length, get sub_idx masks
             if mask.shape[0] >= ad_params["full_length"]:
                 mask = torch.Tensor(mask[ad_params["sub_idxs"]])
@@ -240,10 +263,10 @@ def ipadapter_attention(out, q, k, v, extra_options, module_key='', ipadapter=No
             mask = F.pad(mask, (0, 0, pad1, pad2), value=0.0)
         elif mask_len > seq_len:
             crop_start = (mask_len - seq_len) // 2
-            mask = mask[:, crop_start:crop_start+seq_len, :]
+            mask = mask[:, crop_start : crop_start + seq_len, :]
 
         out_ip = out_ip * mask
 
-    #out = out + out_ip
+    # out = out + out_ip
 
     return out_ip.to(dtype=dtype)
