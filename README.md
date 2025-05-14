@@ -3,56 +3,8 @@
 
 The IPAdapter are very powerful models for image-to-image conditioning. The subject or even just the style of the reference image(s) can be easily transferred to a generation. Think of it as a 1-image lora.
 
-# Sponsorship
-
-<div align="center">
-
-**[:heart: Github Sponsor](https://github.com/sponsors/cubiq) | [:coin: Paypal](https://paypal.me/matt3o)**
-
-</div>
-
-If you like my work and wish to see updates and new features please consider sponsoring my projects.
-
-- [ComfyUI IPAdapter Plus](https://github.com/cubiq/ComfyUI_IPAdapter_plus)
-- [ComfyUI InstantID (Native)](https://github.com/cubiq/ComfyUI_InstantID)
-- [ComfyUI Essentials](https://github.com/cubiq/ComfyUI_essentials)
-- [ComfyUI FaceAnalysis](https://github.com/cubiq/ComfyUI_FaceAnalysis)
-
-Not to mention the documentation and videos tutorials. Check my **ComfyUI Advanced Understanding** videos on YouTube for example, [part 1](https://www.youtube.com/watch?v=_C7kR2TFIX0) and [part 2](https://www.youtube.com/watch?v=ijqXnW_9gzc)
-
-The only way to keep the code open and free is by sponsoring its development. The more sponsorships the more time I can dedicate to my open source projects.
-
-Please consider a [Github Sponsorship](https://github.com/sponsors/cubiq) or [PayPal donation](https://paypal.me/matt3o) (Matteo "matt3o" Spinelli). For sponsorships of $50+, let me know if you'd like to be mentioned in this readme file, you can find me on [Discord](https://latent.vision/discord) or _matt3o :snail: gmail.com_.
-
-## Important updates
-
-**2024/09/13**: Fixed a nasty bug in the middle block patching that we are carrying around since the beginning. Unfortunately the generated images won't be exactly the same as before. Anyway the middle block doesn't have a huge impact, so it shouldn't be a big deal. It does **not** impact Style or Composition transfer, only linear generations. I do not generally report on small bug fixes but this one may cause different results so I thought it's worth mentioning.
-
-**2024/08/02**: Support for Kolors FaceIDv2. Please check the [example workflow](./examples/IPAdapter_FaceIDv2_Kolors.json) for best practices.
-
-**2024/07/26**: Added support for image batches and animation to the ClipVision Enhancer.
-
-**2024/07/18**: Support for Kolors.
-
-**2024/07/17**: Added experimental ClipVision Enhancer node. It was somehow inspired by the [Scaling on Scales](https://arxiv.org/pdf/2403.13043) paper but the implementation is a bit different. The new IPAdapterClipVisionEnhancer tries to catch small details by tiling the embeds (instead of the image in the pixel space), the result is a slightly higher resolution visual embedding with no cost of performance.
-
-**2024/07/11**: Added experimental Precise composition (layout) transfer. It's not as good as style. `embeds_scaling` has a huge impact. Start with strength 0.8 and boost 0.3 in SDXL and 0.6 boost 0.35 in SD1.5.
-
-**2024/06/28**: Added the `IPAdapter Precise Style Transfer` node. Increase the `style_boost` option to lower the bleeding of the composition layer. **Important:** works better in SDXL, start with a style_boost of 2; for SD1.5 try to increase the weight a little over 1.0 and set the style_boost to a value between -1 and +1, starting with 0.
-
-**2024/06/22**: Added `style transfer precise`, offers less bleeding of the embeds between the style and composition layers. It is sometimes better than the standard style transfer especially if the reference image is very different from the generated image. Works better in SDXL than SD1.5.
-
-**2024/05/21**: Improved memory allocation when `encode_batch_size`. Useful mostly for very long animations.
-
-**2024/05/02**: Add `encode_batch_size` to the Advanced batch node. This can be useful for animations with a lot of frames to reduce the VRAM usage during the image encoding. Please note that results will be slightly different based on the batch size.
-
-**2024/04/27**: Refactored the IPAdapterWeights mostly useful for AnimateDiff animations.
-
-**2024/04/21**: Added Regional Conditioning nodes to simplify attention masking and masked text conditioning.
-
-**2024/04/16**: Added support for the new SDXL portrait unnorm model (link below). It's very strong and tends to ignore the text conditioning. Lower the CFG to 3-4 or use a RescaleCFG node.
-
-*(Older updates removed for readability)*
+> [!IMPORTANT]  
+> **2025.04.14** - I do not use ComfyUI as my main way to interact with Gen AI anymore as a result I'm setting the repository in "maintenance only" mode. If there are crucial updates or PRs I might still consider merging them but I do not plan any consistent work on this repo.
 
 ## Example workflows
 
@@ -142,38 +94,9 @@ There are many workflows included in the [examples](./examples/) directory. Plea
 
 Usually it's a good idea to lower the `weight` to at least `0.8` and increase the number steps. To increase adherece to the prompt you may try to change the **weight type** in the `IPAdapter Advanced` node.
 
-## Nodes reference
-
-I'm (slowly) documenting all nodes. Please check the [Nodes reference](./NODES.md).
-
 ## Troubleshooting
 
 Please check the [troubleshooting](https://github.com/cubiq/ComfyUI_IPAdapter_plus/issues/108) before posting a new issue. Also remember to check the previous closed issues.
-
-## Current sponsors
-
-It's only thanks to generous sponsors that **the whole community** can enjoy open and free software. Please join me in thanking the following companies and individuals!
-
-### :trophy: Gold sponsors
-
-[![Kaiber.ai](https://f.latent.vision/imgs/kaiber.png)](https://kaiber.ai/)&nbsp; &nbsp;[![InstaSD](https://f.latent.vision/imgs/instasd.png)](https://www.instasd.com/)
-
-### :tada: Silver sponsors
-
-[![OperArt.ai](https://f.latent.vision/imgs/openart.png?r=1)](https://openart.ai/workflows)&nbsp; &nbsp;[![Finetuners](https://f.latent.vision/imgs/finetuners.png)](https://www.finetuners.ai/)&nbsp; &nbsp;[![Comfy.ICU](https://f.latent.vision/imgs/comfyicu.png?r=1)](https://comfy.icu/)
-
-### Other companies supporting my projects
-
-- [RunComfy](https://www.runcomfy.com/) (ComfyUI Cloud)
-
-### Esteemed individuals
-
-- [Øystein Ø. Olsen](https://github.com/FireNeslo)
-- [Jack Gane](https://github.com/ganeJackS)
-- [Nathan Shipley](https://www.nathanshipley.com/)
-- [Dkdnzia](https://github.com/Dkdnzia)
-
-[And all my public and private sponsors!](https://github.com/sponsors/cubiq)
 
 ## Credits
 
