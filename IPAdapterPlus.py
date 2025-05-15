@@ -1,4 +1,3 @@
-import copy
 import math
 import os
 
@@ -6,16 +5,15 @@ import comfy.model_management as model_management
 import comfy.utils
 import folder_paths
 import torch
-import torch.nn as nn
 import torchvision.transforms.v2 as T
 from comfy.clip_vision import load as load_clip_vision
 from comfy.sd import load_lora_for_models
 from node_helpers import conditioning_set_values
 from PIL import Image
 
-from .CrossAttentionPatch import Attn2Replace, ipadapter_attention
-from .image_proj_models import ImageProjModel, MLPProjModel, MLPProjModelFaceId, ProjModelFaceIdPlus, Resampler
-from .utils import (
+from .src.IPAdapter import IPAdapter
+from .src.CrossAttentionPatch import Attn2Replace, ipadapter_attention
+from .src.utils import (
     contrast_adaptive_sharpening,
     encode_image_masked,
     get_clipvision_file,
@@ -52,197 +50,6 @@ WEIGHT_TYPES = [
     "style transfer precise",
     "composition precise",
 ]
-
-"""
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
- Main IPAdapter Class
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-"""
-
-
-class IPAdapter(nn.Module):
-    def __init__(
-        self,
-        ipadapter_model,
-        cross_attention_dim=1024,
-        output_cross_attention_dim=1024,
-        clip_embeddings_dim=1024,
-        clip_extra_context_tokens=4,
-        is_sdxl=False,
-        is_plus=False,
-        is_full=False,
-        is_faceid=False,
-        is_portrait_unnorm=False,
-        is_kwai_kolors=False,
-        encoder_hid_proj=None,
-        weight_kolors=1.0,
-    ):
-        super().__init__()
-
-        self.clip_embeddings_dim = clip_embeddings_dim
-        self.cross_attention_dim = cross_attention_dim
-        self.output_cross_attention_dim = output_cross_attention_dim
-        self.clip_extra_context_tokens = clip_extra_context_tokens
-        self.is_sdxl = is_sdxl
-        self.is_full = is_full
-        self.is_plus = is_plus
-        self.is_portrait_unnorm = is_portrait_unnorm
-        self.is_kwai_kolors = is_kwai_kolors
-
-        if is_faceid and not is_portrait_unnorm:
-            self.image_proj_model = self.init_proj_faceid()
-        elif is_full:
-            self.image_proj_model = self.init_proj_full()
-        elif is_plus or is_portrait_unnorm:
-            self.image_proj_model = self.init_proj_plus()
-        else:
-            self.image_proj_model = self.init_proj()
-
-        self.image_proj_model.load_state_dict(ipadapter_model["image_proj"])
-        self.ip_layers = To_KV(
-            ipadapter_model["ip_adapter"], encoder_hid_proj=encoder_hid_proj, weight_kolors=weight_kolors
-        )
-
-        self.multigpu_clones = {}
-
-    def create_multigpu_clone(self, device):
-        if device not in self.multigpu_clones:
-            orig_multigpu_clones = self.multigpu_clones
-            try:
-                self.multigpu_clones = {}
-                new_clone = copy.deepcopy(self)
-                new_clone = new_clone.to(device)
-                orig_multigpu_clones[device] = new_clone
-            finally:
-                self.multigpu_clones = orig_multigpu_clones
-
-    def get_multigpu_clone(self, device):
-        return self.multigpu_clones.get(device, self)
-
-    def init_proj(self):
-        image_proj_model = ImageProjModel(
-            cross_attention_dim=self.cross_attention_dim,
-            clip_embeddings_dim=self.clip_embeddings_dim,
-            clip_extra_context_tokens=self.clip_extra_context_tokens,
-        )
-        return image_proj_model
-
-    def init_proj_plus(self):
-        image_proj_model = Resampler(
-            dim=self.cross_attention_dim,
-            depth=4,
-            dim_head=64,
-            heads=20 if self.is_sdxl and not self.is_kwai_kolors else 12,
-            num_queries=self.clip_extra_context_tokens,
-            embedding_dim=self.clip_embeddings_dim,
-            output_dim=self.output_cross_attention_dim,
-            ff_mult=4,
-        )
-        return image_proj_model
-
-    def init_proj_full(self):
-        image_proj_model = MLPProjModel(
-            cross_attention_dim=self.cross_attention_dim, clip_embeddings_dim=self.clip_embeddings_dim
-        )
-        return image_proj_model
-
-    def init_proj_faceid(self):
-        if self.is_plus:
-            image_proj_model = ProjModelFaceIdPlus(
-                cross_attention_dim=self.cross_attention_dim,
-                id_embeddings_dim=512,
-                clip_embeddings_dim=self.clip_embeddings_dim,
-                num_tokens=self.clip_extra_context_tokens,
-            )
-        else:
-            image_proj_model = MLPProjModelFaceId(
-                cross_attention_dim=self.cross_attention_dim,
-                id_embeddings_dim=512,
-                num_tokens=self.clip_extra_context_tokens,
-            )
-        return image_proj_model
-
-    @torch.inference_mode()
-    def get_image_embeds(self, clip_embed, clip_embed_zeroed, batch_size):
-        torch_device = model_management.get_torch_device()
-        intermediate_device = model_management.intermediate_device()
-
-        if batch_size == 0:
-            batch_size = clip_embed.shape[0]
-            intermediate_device = torch_device
-        elif batch_size > clip_embed.shape[0]:
-            batch_size = clip_embed.shape[0]
-
-        clip_embed = torch.split(clip_embed, batch_size, dim=0)
-        clip_embed_zeroed = torch.split(clip_embed_zeroed, batch_size, dim=0)
-
-        image_prompt_embeds = []
-        uncond_image_prompt_embeds = []
-
-        for ce, cez in zip(clip_embed, clip_embed_zeroed):
-            image_prompt_embeds.append(self.image_proj_model(ce.to(torch_device)).to(intermediate_device))
-            uncond_image_prompt_embeds.append(self.image_proj_model(cez.to(torch_device)).to(intermediate_device))
-
-        del clip_embed, clip_embed_zeroed
-
-        image_prompt_embeds = torch.cat(image_prompt_embeds, dim=0)
-        uncond_image_prompt_embeds = torch.cat(uncond_image_prompt_embeds, dim=0)
-
-        torch.cuda.empty_cache()
-
-        # image_prompt_embeds = self.image_proj_model(clip_embed)
-        # uncond_image_prompt_embeds = self.image_proj_model(clip_embed_zeroed)
-        return image_prompt_embeds, uncond_image_prompt_embeds
-
-    @torch.inference_mode()
-    def get_image_embeds_faceid_plus(self, face_embed, clip_embed, s_scale, shortcut, batch_size):
-        torch_device = model_management.get_torch_device()
-        intermediate_device = model_management.intermediate_device()
-
-        if batch_size == 0:
-            batch_size = clip_embed.shape[0]
-            intermediate_device = torch_device
-        elif batch_size > clip_embed.shape[0]:
-            batch_size = clip_embed.shape[0]
-
-        face_embed_batch = torch.split(face_embed, batch_size, dim=0)
-        clip_embed_batch = torch.split(clip_embed, batch_size, dim=0)
-
-        embeds = []
-        for face_embed, clip_embed in zip(face_embed_batch, clip_embed_batch):
-            embeds.append(
-                self.image_proj_model(
-                    face_embed.to(torch_device), clip_embed.to(torch_device), scale=s_scale, shortcut=shortcut
-                ).to(intermediate_device)
-            )
-
-        embeds = torch.cat(embeds, dim=0)
-        del face_embed_batch, clip_embed_batch
-        torch.cuda.empty_cache()
-        # embeds = self.image_proj_model(face_embed, clip_embed, scale=s_scale, shortcut=shortcut)
-        return embeds
-
-
-class To_KV(nn.Module):
-    def __init__(self, state_dict, encoder_hid_proj=None, weight_kolors=1.0):
-        super().__init__()
-
-        if encoder_hid_proj is not None:
-            hid_proj = nn.Linear(encoder_hid_proj["weight"].shape[1], encoder_hid_proj["weight"].shape[0], bias=True)
-            hid_proj.weight.data = encoder_hid_proj["weight"] * weight_kolors
-            hid_proj.bias.data = encoder_hid_proj["bias"] * weight_kolors
-
-        self.to_kvs = nn.ModuleDict()
-        for key, value in state_dict.items():
-            if encoder_hid_proj is not None:
-                linear_proj = nn.Linear(value.shape[1], value.shape[0], bias=False)
-                linear_proj.weight.data = value
-                self.to_kvs[key.replace(".weight", "").replace(".", "_")] = nn.Sequential(hid_proj, linear_proj)
-            else:
-                self.to_kvs[key.replace(".weight", "").replace(".", "_")] = nn.Linear(
-                    value.shape[1], value.shape[0], bias=False
-                )
-                self.to_kvs[key.replace(".weight", "").replace(".", "_")].weight.data = value
 
 
 def set_model_patch_replace(model, patch_kwargs, key):
