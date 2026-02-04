@@ -1,12 +1,13 @@
 import copy
-import math
 from typing import Mapping, Optional
 
-import comfy.model_management
 import torch
 import torch.nn as nn
 from einops import rearrange
 from einops.layers.torch import Rearrange
+
+import comfy.model_management
+from comfy.ldm.modules.attention import optimized_attention
 
 
 class To_KV(nn.Module):
@@ -74,17 +75,7 @@ class PerceiverAttention(nn.Module):
         kv_input = torch.cat((x, latents), dim=-2)
         k, v = self.to_kv(kv_input).chunk(2, dim=-1)
 
-        q = self.reshape_tensor(q, self.heads)
-        k = self.reshape_tensor(k, self.heads)
-        v = self.reshape_tensor(v, self.heads)
-
-        # attention
-        scale = 1 / math.sqrt(math.sqrt(self.dim_head))
-        weight = (q * scale) @ (k * scale).transpose(-2, -1)  # More stable with f16 than dividing afterwards
-        weight = torch.softmax(weight.float(), dim=-1).type(weight.dtype)
-        out = weight @ v
-
-        out = out.permute(0, 2, 1, 3).reshape(b, l, -1)
+        out = optimized_attention(q, k, v, self.heads)
 
         return self.to_out(out)
 
@@ -138,12 +129,10 @@ class Resampler(nn.Module):
         self.layers = nn.ModuleList([])
         for _ in range(depth):
             self.layers.append(
-                nn.ModuleList(
-                    [
-                        PerceiverAttention(dim=dim, dim_head=dim_head, heads=heads),
-                        FeedForward(dim=dim, mult=ff_mult),
-                    ]
-                )
+                nn.ModuleList([
+                    PerceiverAttention(dim=dim, dim_head=dim_head, heads=heads),
+                    FeedForward(dim=dim, mult=ff_mult),
+                ])
             )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
@@ -199,12 +188,10 @@ class FacePerceiverResampler(nn.Module):
         self.layers = nn.ModuleList([])
         for _ in range(depth):
             self.layers.append(
-                nn.ModuleList(
-                    [
-                        PerceiverAttention(dim=dim, dim_head=dim_head, heads=heads),
-                        FeedForward(dim=dim, mult=ff_mult),
-                    ]
-                )
+                nn.ModuleList([
+                    PerceiverAttention(dim=dim, dim_head=dim_head, heads=heads),
+                    FeedForward(dim=dim, mult=ff_mult),
+                ])
             )
 
     def forward(self, latents: torch.Tensor, x: torch.Tensor) -> torch.Tensor:

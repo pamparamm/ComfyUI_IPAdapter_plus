@@ -1,23 +1,27 @@
 import math
+from typing import Callable
 
 import torch
 import torch.nn.functional as F
+from torch import Tensor
+
 from comfy.ldm.modules.attention import attention_sage, optimized_attention
 
+from .IPAdapter import IPAdapter
 from .utils import tensor_to_size
 
 
 class Attn2Replace:
-    def __init__(self, callback=None, **kwargs):
-        self.callback = [callback]
+    def __init__(self, callback: Callable, **kwargs):
+        self.callbacks = [callback]
         self.kwargs = [kwargs]
         self.multigpu_kwargs = {}
 
     def get_multigpu_kwargs(self, device):
         return self.multigpu_kwargs.get(device, self.kwargs)
 
-    def add(self, callback, **kwargs):
-        self.callback.append(callback)
+    def add(self, callback: Callable, **kwargs):
+        self.callbacks.append(callback)
         self.kwargs.append(kwargs)
 
         for key, value in kwargs.items():
@@ -30,7 +34,7 @@ class Attn2Replace:
 
         device_kwargs = self.get_multigpu_kwargs(q.device)
 
-        for i, callback in enumerate(self.callback):
+        for i, callback in enumerate(self.callbacks):
             if sigma <= self.kwargs[i]["sigma_start"] and sigma >= self.kwargs[i]["sigma_end"]:
                 out = out + callback(out, q, k, v, extra_options, **device_kwargs[i])
 
@@ -64,6 +68,147 @@ class Attn2Replace:
 
         self.multigpu_kwargs[device] = new_kwargs
         return self
+
+
+def ipadapter_attention_factory(
+    attn2_key: tuple[str, int, int] = None,
+    module_key="",
+    ipadapter: IPAdapter = None,
+    weight=1.0,
+    cond: Tensor = None,
+    cond_alt=None,
+    uncond: Tensor = None,
+    weight_type="linear",
+    mask: Tensor | None = None,
+    sigma_start=0.0,
+    sigma_end=1.0,
+    unfold_batch=False,
+    embeds_scaling="V only",
+    latent: dict[str, Tensor] = None,
+    device="cuda",
+    **kwargs,
+) -> Callable:
+    def _identity_attention(*args, **kwargs):
+        return 0
+
+    ipadapter = ipadapter.get_multigpu_clone(device)
+
+    epsilon = 0.0
+    if optimized_attention == attention_sage:
+        epsilon = 1e-5
+
+    block_type, block_id, t_idx = attn2_key
+    bs = latent["samples"].shape[0]
+
+    layers = 11 if "101_to_k_ip" in ipadapter.ip_layers.to_kvs else 16
+    k_key = module_key + "_to_k_ip"
+    v_key = module_key + "_to_v_ip"
+
+    if weight_type == "ease in":
+        weight = weight * (0.05 + 0.95 * (1 - t_idx / layers))
+    elif weight_type == "ease out":
+        weight = weight * (0.05 + 0.95 * (t_idx / layers))
+    elif weight_type == "ease in-out":
+        weight = weight * (0.05 + 0.95 * (1 - abs(t_idx - (layers / 2)) / (layers / 2)))
+    elif weight_type == "reverse in-out":
+        weight = weight * (0.05 + 0.95 * (abs(t_idx - (layers / 2)) / (layers / 2)))
+    elif weight_type == "weak input" and block_type == "input":
+        weight = weight * 0.2
+    elif weight_type == "weak middle" and block_type == "middle":
+        weight = weight * 0.2
+    elif weight_type == "weak output" and block_type == "output":
+        weight = weight * 0.2
+    elif weight_type == "strong middle" and (block_type == "input" or block_type == "output"):
+        weight = weight * 0.2
+    elif isinstance(weight, dict):
+        if t_idx not in weight:
+            return _identity_attention
+
+        if weight_type == "style transfer precise":
+            if layers == 11 and t_idx == 3:
+                uncond = cond
+                cond = cond * epsilon
+            elif layers == 16 and (t_idx == 4 or t_idx == 5):
+                uncond = cond
+                cond = cond * epsilon
+        elif weight_type == "composition precise":
+            if layers == 11 and t_idx != 3:
+                uncond = cond
+                cond = cond * epsilon
+            elif layers == 16 and (t_idx != 4 and t_idx != 5):
+                uncond = cond
+                cond = cond * epsilon
+
+        weight = weight[t_idx]
+
+        if cond_alt is not None and t_idx in cond_alt:
+            cond = cond_alt[t_idx]
+            del cond_alt
+
+    if (isinstance(weight, torch.Tensor) and torch.all(weight == 0)) or weight == 0:
+        return _identity_attention
+
+    # if unfold_batch:
+    #     cond = tensor_to_size(cond, 2)
+    #     uncond = tensor_to_size(uncond, 2)
+
+    #     k_cond = ipadapter.ip_layers.to_kvs[k_key](cond)
+    #     k_uncond = ipadapter.ip_layers.to_kvs[k_key](uncond)
+    #     v_cond = ipadapter.ip_layers.to_kvs[v_key](cond)
+    #     v_uncond = ipadapter.ip_layers.to_kvs[v_key](uncond)
+    # else:
+
+    k_cond = ipadapter.ip_layers.to_kvs[k_key](cond).repeat(bs, 1, 1)
+    k_uncond = ipadapter.ip_layers.to_kvs[k_key](uncond).repeat(bs, 1, 1)
+    v_cond = ipadapter.ip_layers.to_kvs[v_key](cond).repeat(bs, 1, 1)
+    v_uncond = ipadapter.ip_layers.to_kvs[v_key](uncond).repeat(bs, 1, 1)
+
+    # if embeds_scaling == "K+mean(V) w/ C penalty":
+    #     scaling = float(ip_k.shape[2]) / 1280.0
+    #     weight = weight * scaling
+    #     ip_k = ip_k * weight
+    #     ip_v_mean = torch.mean(ip_v, dim=1, keepdim=True)
+    #     ip_v = (ip_v - ip_v_mean) + ip_v_mean * weight
+    #     del ip_v_mean
+    # elif embeds_scaling == "K+V w/ C penalty":
+    #     scaling = float(ip_k.shape[2]) / 1280.0
+    #     weight = weight * scaling
+    #     ip_k = ip_k * weight
+    #     ip_v = ip_v * weight
+    # elif embeds_scaling == "K+V":
+    #     ip_k = ip_k * weight
+    #     ip_v = ip_v * weight
+    # else:
+    #     mult_out = weight  # I'm doing this to get the same results as before
+
+    def _ipadapter_attention(out: Tensor, q: Tensor, k: Tensor, v: Tensor, extra_options, **kwargs):
+        dtype = q.dtype
+        cond_or_uncond = extra_options["cond_or_uncond"]
+
+        ip_k = torch.cat([(k_cond, k_uncond)[i] for i in cond_or_uncond], dim=0)
+        ip_v = torch.cat([(v_cond, v_uncond)[i] for i in cond_or_uncond], dim=0)
+
+        out_ip = optimized_attention(q, ip_k, ip_v, extra_options["n_heads"])
+
+        if weight is not None:
+            out_ip = out_ip * weight
+
+        if mask is not None:
+            h, w = extra_options["activations_shape"][-2:]
+
+            _mask = F.interpolate(mask.unsqueeze(1), size=(h, w), mode="bilinear").squeeze(1)
+            _mask = tensor_to_size(_mask, bs)
+
+            _mask = _mask.repeat(len(cond_or_uncond), 1, 1)
+            _mask = _mask.view(_mask.shape[0], -1, 1).repeat(1, 1, out.shape[2])
+
+            out_ip = out_ip * _mask
+
+        # out = out + out_ip
+
+        return out_ip.to(dtype=dtype)
+
+    return _ipadapter_attention
 
 
 def ipadapter_attention(

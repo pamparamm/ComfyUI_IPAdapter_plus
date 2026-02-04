@@ -1,11 +1,12 @@
 import os
 import re
 
+import torch
+import torchvision.transforms.v2 as T
+
 import comfy.model_management as model_management
 import comfy.utils
 import folder_paths
-import torch
-import torchvision.transforms.v2 as T
 from comfy.clip_vision import Output, clip_preprocess
 
 
@@ -305,9 +306,10 @@ def encode_image_masked(clip_vision, image, mask=None, batch_size=0, tiles=1, ra
             # embeds['penultimate_hidden_states'] = (embeds['penultimate_hidden_states']*ratio + embeds_split['penultimate_hidden_states']) / 2
         else:  # otherwise we can concatenate them, they can be averaged later
             embeds["image_embeds"] = torch.cat([embeds["image_embeds"] * ratio, embeds_split["image_embeds"]])
-            embeds["penultimate_hidden_states"] = torch.cat(
-                [embeds["penultimate_hidden_states"] * ratio, embeds_split["penultimate_hidden_states"]]
-            )
+            embeds["penultimate_hidden_states"] = torch.cat([
+                embeds["penultimate_hidden_states"] * ratio,
+                embeds_split["penultimate_hidden_states"],
+            ])
 
     # del embeds_split
 

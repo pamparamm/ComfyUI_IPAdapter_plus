@@ -1,18 +1,19 @@
 import math
 import os
 
+import torch
+import torchvision.transforms.v2 as T
+from PIL import Image
+
 import comfy.model_management as model_management
 import comfy.utils
 import folder_paths
-import torch
-import torchvision.transforms.v2 as T
 from comfy.clip_vision import load as load_clip_vision
 from comfy.sd import load_lora_for_models
 from node_helpers import conditioning_set_values
-from PIL import Image
 
-from .src.IPAdapter import IPAdapter
 from .src.CrossAttentionPatch import Attn2Replace, ipadapter_attention
+from .src.IPAdapter import IPAdapter
 from .src.utils import (
     contrast_adaptive_sharpening,
     encode_image_masked,
@@ -64,11 +65,13 @@ def set_model_patch_replace(model, patch_kwargs, key):
     else:
         to["patches_replace"]["attn2"] = to["patches_replace"]["attn2"].copy()
 
+    cb = ipadapter_attention
+
     if key not in to["patches_replace"]["attn2"]:
-        to["patches_replace"]["attn2"][key] = Attn2Replace(ipadapter_attention, **patch_kwargs)
+        to["patches_replace"]["attn2"][key] = Attn2Replace(cb, attn2_key=key, **patch_kwargs)
         model.model_options["transformer_options"] = to
     else:
-        to["patches_replace"]["attn2"][key].add(ipadapter_attention, **patch_kwargs)
+        to["patches_replace"]["attn2"][key].add(cb, **patch_kwargs)
 
 
 def ipadapter_execute(
@@ -98,6 +101,7 @@ def ipadapter_execute(
     composition_boost=None,
     enhance_tiles=1,
     enhance_ratio=1.0,
+    latent=None,
 ):
     device = model_management.get_torch_device()
     dtype = model_management.unet_dtype()
@@ -551,6 +555,7 @@ def ipadapter_execute(
         "sigma_end": sigma_end,
         "unfold_batch": unfold_batch,
         "embeds_scaling": embeds_scaling,
+        "latent": latent,
     }
 
     number = 0
@@ -911,6 +916,7 @@ class IPAdapterAdvanced:
         enhance_tiles=1,
         enhance_ratio=1.0,
         weight_kolors=1.0,
+        latent=None,
     ):
         is_sdxl = isinstance(
             model.model, (comfy.model_base.SDXL, comfy.model_base.SDXLRefiner, comfy.model_base.SDXL_instructpix2pix)
@@ -982,6 +988,7 @@ class IPAdapterAdvanced:
                 "enhance_tiles": enhance_tiles,
                 "enhance_ratio": enhance_ratio,
                 "weight_kolors": weight_kolors,
+                "latent": latent,
             }
 
             work_model, face_image = ipadapter_execute(work_model, ipadapter_model, clip_vision, **ipa_args)
@@ -1466,6 +1473,7 @@ class IPAdapterClipVisionEnhancer(IPAdapterAdvanced):
                 "image_negative": ("IMAGE",),
                 "attn_mask": ("MASK",),
                 "clip_vision": ("CLIP_VISION",),
+                "latent": ("LATENT",),
             },
         }
 
@@ -1636,14 +1644,10 @@ class IPAdapterEncoder:
         # resize and crop the mask to 224x224
         if mask is not None and mask.shape[1:3] != torch.Size([clipvision_size, clipvision_size]):
             mask = mask.unsqueeze(1)
-            transforms = T.Compose(
-                [
-                    T.CenterCrop(min(mask.shape[2], mask.shape[3])),
-                    T.Resize(
-                        (clipvision_size, clipvision_size), interpolation=T.InterpolationMode.BICUBIC, antialias=True
-                    ),
-                ]
-            )
+            transforms = T.Compose([
+                T.CenterCrop(min(mask.shape[2], mask.shape[3])),
+                T.Resize((clipvision_size, clipvision_size), interpolation=T.InterpolationMode.BICUBIC, antialias=True),
+            ])
             mask = transforms(mask).squeeze(1)
             # mask = T.Resize((image.shape[1], image.shape[2]), interpolation=T.InterpolationMode.BICUBIC, antialias=True)(mask.unsqueeze(1)).squeeze(1)
 
@@ -1734,12 +1738,10 @@ class IPAdapterNoise:
         if image_optional is None:
             image = torch.zeros([1, 224, 224, 3])
         else:
-            transforms = T.Compose(
-                [
-                    T.CenterCrop(min(image_optional.shape[1], image_optional.shape[2])),
-                    T.Resize((224, 224), interpolation=T.InterpolationMode.BICUBIC, antialias=True),
-                ]
-            )
+            transforms = T.Compose([
+                T.CenterCrop(min(image_optional.shape[1], image_optional.shape[2])),
+                T.Resize((224, 224), interpolation=T.InterpolationMode.BICUBIC, antialias=True),
+            ])
             image = transforms(image_optional.permute([0, 3, 1, 2])).permute([0, 2, 3, 1])
 
         seed = int(torch.sum(image).item()) % 1000000007  # hash the image to get a seed, grants predictability
@@ -1756,13 +1758,11 @@ class IPAdapterNoise:
             noise = torch.randn_like(image) * strength
             noise = image + noise
         elif type == "shuffle":
-            transforms = T.Compose(
-                [
-                    T.ElasticTransform(alpha=75.0, sigma=(1 - strength) * 3.5),
-                    T.RandomVerticalFlip(p=1.0),
-                    T.RandomHorizontalFlip(p=1.0),
-                ]
-            )
+            transforms = T.Compose([
+                T.ElasticTransform(alpha=75.0, sigma=(1 - strength) * 3.5),
+                T.RandomVerticalFlip(p=1.0),
+                T.RandomHorizontalFlip(p=1.0),
+            ])
             image = transforms(image.permute([0, 3, 1, 2])).permute([0, 2, 3, 1])
             noise = torch.randn_like(image) * (strength * 0.75)
             noise = image * (1 - noise) + noise
